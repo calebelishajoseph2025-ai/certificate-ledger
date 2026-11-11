@@ -150,14 +150,53 @@ export function hydrateEngine(engine: LedgerEngine, snapshot: LedgerSnapshot): v
 // Postgres store
 // ---------------------------------------------------------------------------
 
+/**
+ * Explicit TLS decision for a DATABASE_URL.
+ *
+ * TLS is ON by default (fail-secure: a certificate ledger never sends its
+ * password in plaintext). Opt out only for non-TLS endpoints (local docker)
+ * by appending `sslmode=disable`.
+ *
+ * The `sslmode` URL parameter is deliberately NOT handed to the pg client:
+ * recent pg-connection-string versions map `require`/`prefer` to verify-full
+ * and the parsed string config OVERRIDES an explicit `ssl` option, which
+ * breaks against endpoints presenting a private CA chain (e.g. the Supabase
+ * pooler signs with "Supabase Intermediate 2021 CA"). `rejectUnauthorized:
+ * false` matches libpq `sslmode=require` semantics: encrypted, no CA pinning.
+ */
+export function sslFor(databaseUrl: string): { rejectUnauthorized: false } | undefined {
+  let mode: string | null = null;
+  try {
+    mode = new URL(databaseUrl).searchParams.get('sslmode');
+  } catch {
+    // Unparseable URL — treat any raw `sslmode=disable` marker as the opt-out.
+    if (/[?&]sslmode=disable(?:&|$)/.test(databaseUrl)) return undefined;
+    return { rejectUnauthorized: false };
+  }
+  if (mode === 'disable') return undefined;
+  return { rejectUnauthorized: false };
+}
+
+/** DATABASE_URL with TLS-related params removed, so the explicit `ssl` option is always authoritative. */
+function stripTlsParams(databaseUrl: string): string {
+  try {
+    const u = new URL(databaseUrl);
+    u.searchParams.delete('sslmode');
+    u.searchParams.delete('ssl');
+    u.searchParams.delete('sslnegotiation');
+    return u.toString();
+  } catch {
+    return databaseUrl;
+  }
+}
+
 export function createPostgresStore(databaseUrl: string): LedgerStateStore {
-  // TLS is governed by `sslmode` in the connection string itself (Supabase
-  // pooler URIs include ?sslmode=require; local docker URLs carry no sslmode).
   const pool = new Pool({
-    connectionString: databaseUrl,
+    connectionString: stripTlsParams(databaseUrl),
     max: 4,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 8_000,
+    ssl: sslFor(databaseUrl),
   });
   pool.on('error', (err) => {
     console.error('[ledger] persistence: idle client error', err);
@@ -252,7 +291,7 @@ export function createLedgerPersistence(
   const state = {
     version: 0,
     // Serialize persists on this instance so two concurrent mutations never race locally.
-    queue: Promise.resolve() as Promise<unknown>,
+    queue: Promise.resolve() as Promise<void>,
   };
 
   const reload = async (): Promise<void> => {
@@ -276,9 +315,17 @@ export function createLedgerPersistence(
   })();
 
   const persistNow = async (): Promise<'ok' | 'conflict' | 'error'> => {
+    // Serialize the state AT CALL TIME, together with the version it was based
+    // on. Saves run serialized on the instance queue, but a queued save may
+    // execute after an earlier save conflicted and rehydrated the engine —
+    // serializing at execution time would then silently persist the rehydrated
+    // state and ack the caller's lost write. Locking against the call-time
+    // base version makes such a save a 409 conflict instead.
+    const pending = JSON.stringify(serializeEngine(engine));
+    const baseVersion = state.version;
     const run = async (): Promise<'ok' | 'conflict' | 'error'> => {
       try {
-        const next = await store.save(JSON.stringify(serializeEngine(engine)), state.version);
+        const next = await store.save(pending, baseVersion);
         if (next === null) {
           // Another instance won the race: adopt the DB truth, report conflict.
           await reload();
@@ -341,28 +388,41 @@ export function createLedgerPersistence(
     const finishWith = async (write: () => void): Promise<void> => {
       if (settled) return;
       settled = true;
-      if (res.statusCode >= 400) {
-        // Failed request — nothing was committed; pass the body through.
-        write();
-        return;
-      }
-      const outcome = await persistNow();
-      if (outcome === 'ok') {
-        write();
-      } else if (outcome === 'conflict') {
-        res.status(409).json({
-          error: {
-            code: 'LEDGER_STATE_CONFLICT',
-            message: 'The ledger was updated by another process. Your change was discarded and the live state was reloaded — please retry.',
-          },
-        });
-      } else {
-        res.status(503).json({
-          error: {
-            code: 'LEDGER_PERSIST_FAILED',
-            message: 'Ledger state could not be saved durably. The operation was not committed — please retry shortly.',
-          },
-        });
+      try {
+        if (res.statusCode >= 400) {
+          // Failed request — nothing was committed; pass the body through.
+          write();
+          return;
+        }
+        const outcome = await persistNow();
+        if (outcome === 'ok') {
+          write();
+        } else if (outcome === 'conflict') {
+          if (res.headersSent) {
+            log.error('[ledger] persistence: conflict after headers sent — cannot inform client');
+            return;
+          }
+          res.status(409).json({
+            error: {
+              code: 'LEDGER_STATE_CONFLICT',
+              message: 'The ledger was updated by another process. Your change was discarded and the live state was reloaded — please retry.',
+            },
+          });
+        } else {
+          if (res.headersSent) {
+            log.error('[ledger] persistence: persist failed after headers sent — cannot inform client');
+            return;
+          }
+          res.status(503).json({
+            error: {
+              code: 'LEDGER_PERSIST_FAILED',
+              message: 'Ledger state could not be saved durably. The operation was not committed — please retry shortly.',
+            },
+          });
+        }
+      } catch (err) {
+        log.error('[ledger] persistence: response finalize failed', err);
+        if (!res.headersSent) respondUnavailable(res);
       }
     };
 

@@ -79,8 +79,11 @@ the client retries; every operation is idempotent).
 1. Create a free project at [supabase.com](https://supabase.com).
 2. In the SQL Editor run `supabase/schema.sql` once, then `supabase/persistence.sql`.
 3. Project Settings → Database → Connection string → **Transaction pooler** (port `6543`).
-   That URI is your `DATABASE_URL`. It authenticates with the database password —
-   the app never needs Supabase anon/service-role keys.
+   That URI is your `DATABASE_URL` (paste as-is — the app always encrypts the
+   connection itself and ignores any `sslmode` URL parameter; for a non-TLS
+   endpoint like local docker append `?sslmode=disable` instead).
+   It authenticates with the database password — the app never needs Supabase
+   anon/service-role keys.
 4. On Vercel, import the repo and set env vars: `DATABASE_URL`, `SESSION_SECRET`,
    `LEDGER_SIGNING_KEY` (must differ), `ORGANIZER_PASSCODE`, `SYSTEM_RESET_KEY`.
    Leave `PUBLIC_BASE_URL` unset to auto-use `https://$VERCEL_URL`, or set your

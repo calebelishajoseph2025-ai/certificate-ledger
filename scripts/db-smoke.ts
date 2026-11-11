@@ -15,7 +15,7 @@ import 'dotenv/config';
 import { Pool } from 'pg';
 import assert from 'node:assert/strict';
 import { LedgerEngine } from '../src/lib/ledgerEngine.js';
-import { createLedgerPersistence, createPostgresStore } from '../src/lib/ledgerPersistence.js';
+import { createLedgerPersistence, createPostgresStore, sslFor } from '../src/lib/ledgerPersistence.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -23,7 +23,7 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+const pool = new Pool({ connectionString: DATABASE_URL, ssl: sslFor(DATABASE_URL) });
 const store = createPostgresStore(DATABASE_URL);
 
 function newEngine() {

@@ -32,6 +32,6 @@
     "supabase/migrations/0002_standout.sql":  "f14d8c6260023acd84d6c4a3801f37c593cae5ba8903cd34b395c98dd76268ea",
     "sample_data/attendees.csv":  "31a35746233ed3f9bb48467a0869dc5ec0dae745e67a7b130cd140a2797526c2",
     "sample_data/attendees_round2.csv":  "40d6d6bf29983ee7731dfea832300b8c7f7dffd412ee70238b61fab1b99c8f98",
-    ".env":  "7a2525ca7a829c6fd6c36d43f6433c3bbfe45b477feea6ffbbfd150201af563a",
-    ".env.example":  "a15e8dd3d5dddbee76021fba7e2c49989cfbcc54da3a9b13216964af7c4e4c56"
+    ".env":  "71ebf8ef237c350fcdbef58020b8ea6799e7d8029533a790f0f932ac37429bb2",
+    ".env.example":  "d16122d3fe1a5aa05b46fb7ec1b7e502a4bcf068ea23d88e78be25837ff8b210"
 }
