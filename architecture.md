@@ -101,7 +101,7 @@ certificate-ledger/
   - `npm run dev`: starts the unified full-stack server via `tsx server.ts`.
   - `npm test`: executes all unit tests using Node's test runner via `tsx --test src/**/*.test.ts`.
   - `npm run build`: builds the frontend production bundle.
-- **`vercel.json`**: Deployment manifest configuring the Python serverless function at `api/index.py`, header-conditional rewrites for social bot crawlers (Slackbot, Twitterbot, LinkedInbot) accessing `/verify/:id`, and SPA fallbacks.
+- **`vercel.json`**: Deployment manifest configuring the Node serverless function at `api/index.ts`, header-conditional rewrites for social bot crawlers (Slackbot, Twitterbot, LinkedInbot) accessing `/verify/:id`, and SPA fallbacks.
 - **`.env.example`**: Complete template defining all required and optional configuration keys with comments explaining where to obtain them.
 - **`DUPLICATE_PREVENTION.md`**: Architectural document detailing the 5 layers of defense (Database Constraints, Transaction Row Locks, Importer Fingerprints, Fuzzy Human Review, and UI Safeguards).
 
@@ -124,8 +124,8 @@ certificate-ledger/
 
 ---
 
-### Backend Python Engine (`backend/` & `api/`)
-- **`api/index.py`**: Entry point exporting the ASGI `app` for Vercel's Python runtime.
+### Backend Python Engine (`backend/`)
+- **`api/index.ts`**: Entry point re-exporting the Express `app` for Vercel's Node runtime (`backend/` is the legacy Python engine, kept for reference and not deployed).
 - **`backend/app/config.py`**: Pydantic v2 settings class loading `.env`, asserting secret length (≥ 32 chars), ensuring `SESSION_SECRET != LEDGER_SIGNING_KEY`, and deriving domain-separated subkeys (`k_cert`, `k_audit`).
 - **`backend/app/signing.py`**: Python implementation of Crockford base32 ID generation, checksum calculation, and HMAC-SHA256 link signing.
 - **`backend/app/main.py`**: FastAPI application exposing REST routes, CORS middleware, and OpenAPI documentation at `/api/docs`.

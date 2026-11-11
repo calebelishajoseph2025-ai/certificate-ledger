@@ -5,7 +5,6 @@ $files = @(
   'DUPLICATE_PREVENTION.md',
   'vercel.json',
   'Makefile',
-  'api/index.py',
   'src/lib/crypto.ts',
   'src/lib/crypto.test.ts',
   'src/lib/classifier.ts',
