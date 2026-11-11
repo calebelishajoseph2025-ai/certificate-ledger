@@ -1,0 +1,35 @@
+name,email,course,completion_date,status
+Elena Rostova,elena.rostova@example.com,DS-101,2026-02-15,completed
+Marcus Vance,marcus.vance@example.com,DS-101,2026-02-15,completed
+Marcus Vance, MARCUS.VANCE@EXAMPLE.COM ,ds-101,2026-02-15,completed
+Aisha Khan,aisha.khan@example.com,DS-101,2026-02-16,completed
+Aisha Khan,aisha.khan@example.com,UX-201,2026-02-28,completed
+Priya Raman,priya.raman@gmail.com,DS-101,2026-02-16,completed
+Priya Raman,priya.raman@gmial.com,UX-201,2026-02-28,completed
+Jon Walker,jon.walker@example.com,DS-101,2026-02-17,completed
+John Walker,john.walker@example.com,UX-201,2026-03-01,completed
+Sam Taylor,sam.taylor.dev@workplace.org,DS-101,2026-02-17,completed
+Sam Taylor,sam.taylor99@personalmail.net,CL-150,2026-03-05,completed
+David Chen,david.chen@example.com,DS-101,2026-02-18,completed
+Fatima Al-Sayed,fatima.alsayed@example.com,DS-101,2026-02-18,completed
+Tariq Mansoor,tariq.mansoor@example.com,DS-101,2026-02-19,dropped
+Chloe Bennett,chloe.bennett@example.com,UX-201,15/02/2026,completed
+Carlos Mendez,carlos.mendez@example.com,UX-201,2026-02-20,completed
+Zoe Washington,zoe.w@example.com,UX-201,2026-02-20,no-show
+Amir Patel,amir.patel@example.com,UX-201,2026-02-21,completed
+Sara Lindqvist,sara.lindqvist@example.com,UX-201,21-Feb-2026,completed
+Liam O'Connor,liam.oconnor@example.com,CL-150,2026-02-22,completed
+Nina Gomez,nina.gomez@example.com,CL-150,2026-02-22,completed
+Kofi Mensah,kofi.mensah@example.com,CL-150,2026-02-23,completed
+Maya Lin,maya.lin@example.com,CL-150,2026-02-23,in progress
+Oliver Scott,oliver.scott@example.com,CL-150,2026-02-24,completed
+Hannah Abbott,hannah.abbott@example.com,CL-150,2026-02-24,completed
+,missing.name@example.com,DS-101,2026-02-25,completed
+Arthur Dent,,UX-201,2026-02-25,completed
+Ford Prefect,ford.prefect@example.com,DS-101,,completed
+Trillian Astra,trillian.astra@example.com,UNKNOWN-999,2026-02-26,completed
+Zaphod Beeblebrox,zaphod@galaxy.org,CL-150,32/13/2026,completed
+Grace Hopper,grace.hopper@navy.mil,DS-101,2026-02-27,completed
+Alan Turing,alan.turing@bletchley.uk,UX-201,2026-02-27,completed
+Ada Lovelace,ada.lovelace@analytical.org,CL-150,2026-02-28,completed
+Katherine Johnson,katherine.johnson@nasa.gov,DS-101,2026-03-01,completed

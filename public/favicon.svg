@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Certificate Ledger">
+  <rect width="32" height="32" rx="8" fill="#0B1020"/>
+  <circle cx="16" cy="16" r="11.5" fill="none" stroke="#E0B15B" stroke-width="1.4"/>
+  <circle cx="16" cy="16" r="8.2" fill="none" stroke="#E0B15B" stroke-width="0.7" opacity="0.7"/>
+  <path fill="#E0B15B" d="M16 7.2l1.35 4.05 4.25.18-3.32 2.62 1.22 4.08L16 15.95l-3.5 2.18 1.22-4.08-3.32-2.62 4.25-.18z"/>
+</svg>

@@ -1,0 +1,20 @@
+# Local development database that mirrors the Supabase Postgres contract.
+# Usage:  docker compose -f docker-compose.dev.yml up -d
+# The .env DATABASE_URL (postgresql://postgres:postgres@localhost:5432/postgres)
+# points at this container. Apply the schema with:
+#   Get-Content supabase/schema.sql      | docker exec -i cl-pg psql -U postgres -d postgres
+#   Get-Content supabase/persistence.sql | docker exec -i cl-pg psql -U postgres -d postgres
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cl-pg
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

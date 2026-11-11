@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <title>Certificate Ledger — Tamper-Evident Credential Issuance &amp; Verification</title>
+    <meta
+      name="description"
+      content="Production-grade, tamper-evident certificate issuance and verification with a cryptographic audit hash chain, signed QR verification, and live ledger diagnostics."
+    />
+    <meta property="og:title" content="Certificate Ledger — Tamper-Evident Credential Issuance &amp; Verification" />
+    <meta
+      property="og:description"
+      content="Issue, verify, and audit credentials with an append-only hash chain and signed public lookup."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0B1020" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('cl.theme');
+          var theme =
+            stored === 'observatory' || stored === 'parchment' || stored === 'tidewater' ? stored : 'tidewater';
+          document.documentElement.setAttribute('data-theme', theme);
+          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            document.documentElement.setAttribute('data-reduce-motion', 'true');
+          }
+          var density = localStorage.getItem('cl.density');
+          if (density === 'compact' || density === 'comfortable') {
+            document.documentElement.setAttribute('data-density', density);
+          }
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'tidewater');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

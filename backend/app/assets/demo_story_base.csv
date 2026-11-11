@@ -1,0 +1,13 @@
+name,email,course,completion_date,status
+Ava Martin,ava.martin@example.test,DEMO-101,2026-03-02,completed
+Ben Carter,ben.carter@example.test,DEMO-101,2026-03-02,completed
+Chloe Diaz,chloe.diaz@example.test,DEMO-101,03/03/2026,completed
+Ava Martin, AVA.MARTIN@example.test ,demo-101,2026-03-02,completed
+Priya Raman,priya.raman@example.test,DEMO-201,2026-03-10,completed
+Priya Raman,priya.raman@exmaple.test,DEMO-101,2026-03-02,completed
+Jon Walker,jon.walker@example.test,DEMO-101,2026-03-11,completed
+John Walker,john.walker@example.test,DEMO-201,2026-03-11,completed
+Diego Alvarez,,DEMO-101,2026-03-04,completed
+Emma Stone,emma.stone@example.test,DEMO-201,,completed
+Frank Lee,frank.lee@example.test,DEMO-101,2026-03-05,dropped
+Grace Kim,grace.kim@example.test,DEMO-201,2026-03-12,completed

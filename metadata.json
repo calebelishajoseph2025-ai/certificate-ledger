@@ -1,0 +1,6 @@
+{
+  "name": "Certificate Ledger",
+  "description": "Production-grade, tamper-evident certificate issuance & verification system with cryptographic audit hash chain, signed QR verification, and real-time ledger health diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
