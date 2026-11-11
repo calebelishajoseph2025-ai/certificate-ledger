@@ -71,6 +71,10 @@ app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '5mb' }));
 const ledgerPersistence = createLedgerPersistence(engine);
 app.use(ledgerPersistence.middleware);
 
+// Track DB readiness for the health endpoint.
+let dbReady = ledgerPersistence.mode === 'memory'; // memory = always ready
+ledgerPersistence.ready.then(() => { dbReady = true; }).catch(() => { dbReady = false; });
+
 // ----------------------------------------------------------------------------
 // Rate Limiter (F4)
 // ----------------------------------------------------------------------------
@@ -168,7 +172,9 @@ function requireOrganizer(req: Request, res: Response, next: NextFunction) {
 
 // 1. Health & Diagnostics
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ ok: true, db: true });
+  const mode = ledgerPersistence.mode;
+  const db = mode === 'memory' ? true : dbReady;
+  res.json({ ok: true, db, mode });
 });
 
 app.get('/api/health/ledger', requireOrganizer, (_req: Request, res: Response) => {
@@ -856,7 +862,10 @@ app.post('/api/demo/reset', requireOrganizer, (_req: Request, res: Response) => 
 export { app };
 
 async function startServer() {
-  const { createServer: createViteServer } = await import('vite');
+  // Use a computed specifier so bundlers (esbuild/Vercel) do NOT statically
+  // follow this import — Vite is a devDependency, absent in the serverless bundle.
+  const viteModule = 'vite';
+  const { createServer: createViteServer } = await import(/* @vite-ignore */ viteModule);
   const vite = await createViteServer({
     server: { middlewareMode: true },
     appType: 'spa',
