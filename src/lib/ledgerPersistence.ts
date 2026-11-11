@@ -223,6 +223,8 @@ export function createPostgresStore(databaseUrl: string, unpooledUrl?: string): 
       err.message = `${err.message} (Database password incorrect. Please update the password in DATABASE_URL in Vercel settings or reset it in Supabase Project Settings -> Database).`;
     } else if (err.message?.includes('Tenant or user not found')) {
       err.message = `${err.message} (Supabase Pooler requires username in the format postgres.[project-ref], e.g. postgres.abcdef:password@aws-0-...pooler.supabase.com:6543/postgres).`;
+    } else if (err.code === '42P01' || err.message?.includes('does not exist') || err.message?.includes('relation "ledger_state"')) {
+      err.message = `${err.message} (Table "ledger_state" does not exist in Supabase. Run supabase/persistence.sql in Supabase SQL Editor, or provide DATABASE_URL_UNPOOLED on port 5432).`;
     }
     return err;
   }
@@ -437,6 +439,7 @@ export function resolveDatabaseUrl(explicit?: string): string {
 export function resolveDatabaseUrlUnpooled(): string {
   return (
     process.env.DATABASE_URL_UNPOOLED ||
+    process.env.DIRECT_URL ||
     process.env.POSTGRES_URL_NON_POOLING ||
     ''
   );
@@ -578,15 +581,21 @@ export function createLedgerPersistence(
     if (isConnected && store) {
       try {
         const v = await store.currentVersion();
-        if (v !== null && v !== undefined) return true;
-      } catch {
-        // Will retry below
+        if (v !== null && v !== undefined) {
+          lastError = null;
+          return true;
+        }
+      } catch (err: any) {
+        lastError = err;
+        isConnected = false;
+        log.warn('[ledger] persistence: health check currentVersion failed:', err?.message || err);
       }
     }
     try {
       await connectAndHydrate();
       return isConnected;
-    } catch {
+    } catch (err: any) {
+      lastError = err;
       return false;
     }
   };

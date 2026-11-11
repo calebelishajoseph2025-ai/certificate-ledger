@@ -218,7 +218,11 @@ app.get('/api/health', async (_req: Request, res: Response) => {
     (process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1'));
   const effectiveMode = isLocalDevFallback ? 'memory' : ledgerPersistence.mode;
   const db = effectiveMode === 'memory' ? true : isHealthy;
-  const errorMsg = db ? null : (ledgerPersistence.getLastError?.()?.message || lastDbError);
+  const errorMsg = db
+    ? null
+    : ledgerPersistence.getLastError?.()?.message ||
+      lastDbError ||
+      'Database connection failed. Please check DATABASE_URL, port 6543 pooler credentials, or table ledger_state.';
   res.json({
     ok: true,
     db,
@@ -238,6 +242,7 @@ app.get('/api/health/db-check', async (_req: Request, res: Response) => {
     '';
   const unpooledUrl =
     process.env.DATABASE_URL_UNPOOLED ||
+    process.env.DIRECT_URL ||
     process.env.POSTGRES_URL_NON_POOLING ||
     '';
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';

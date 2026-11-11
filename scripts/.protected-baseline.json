@@ -1,7 +1,7 @@
-﻿{
+{
     "server.ts":  "748fd27c7142150697f5114ba40693367af3a9fa37aab1d3f56923aa0d0ff754",
     "DUPLICATE_PREVENTION.md":  "f88ace88410168425f233344fc3a170fe72b661aad6a590cfcdf805e27df3201",
-    "vercel.json":  "9f822a4759d2d5013d82bcce1236db6c9ae2e0e4dfa000ad0a7ee57fa0cf70d7",
+    "vercel.json":  "f840edbddfea80281a86a85fb4e06da53838dbf195c341499b398412d29bf21f",
     "Makefile":  "fbe034d8f76ed2b28dd3b842bf401166ed28fc966ebdb7e506b660246d0aab97",
     "src/lib/crypto.ts":  "0a42541910dbb9ae657474c3b7e44d9c796a718e16f31cf2d7bfd61b95c1fad2",
     "src/lib/crypto.test.ts":  "66f772225b71849b39ac203755f8e454344a587c76c8ece1c73bdfff859b3cd5",
@@ -21,7 +21,6 @@
     "backend/app/signing.py":  "d8194cb6799601ce9e93fb373c5aae66e47fe12a53ffd966f6ee0fe86f5192a9",
     "backend/app/assets/demo_story_base.csv":  "b0ac67be308f00ea6cd49c16df2945cb5971b9281035304a74cfcb383a85bcc7",
     "backend/app/assets/demo_story_modified.csv":  "d411dd9f87530ffbe5bf9aa237a6573f49f3c029d0cc80b65ed3fd9de5a93013",
-    "backend/app/__pycache__/config.cpython-314.pyc":  "467b4d87bac79f3a8ab57375dcd92fb5d2905012a5654fcce2a2eaeec6e6fb78",
     "backend/scripts/migrate.py":  "2cc563c9194b9322f09d7f6c0d7f12f6c703a1b5ce4d742c02780f225adf99e6",
     "backend/scripts/seed.py":  "3c3698234d87e0ec0a01a253010cbba0e69d95e1922791fa6b8dc3b2120dd4a6",
     "backend/scripts/smoke.py":  "bd738ccccf93b422d9ab622bb38a7e29e41cc301ddf939c0fafaeafc4bbc5b6e",
@@ -31,6 +30,5 @@
     "supabase/migrations/0002_standout.sql":  "f14d8c6260023acd84d6c4a3801f37c593cae5ba8903cd34b395c98dd76268ea",
     "sample_data/attendees.csv":  "31a35746233ed3f9bb48467a0869dc5ec0dae745e67a7b130cd140a2797526c2",
     "sample_data/attendees_round2.csv":  "40d6d6bf29983ee7731dfea832300b8c7f7dffd412ee70238b61fab1b99c8f98",
-    ".env":  "71ebf8ef237c350fcdbef58020b8ea6799e7d8029533a790f0f932ac37429bb2",
     ".env.example":  "d16122d3fe1a5aa05b46fb7ec1b7e502a4bcf068ea23d88e78be25837ff8b210"
 }

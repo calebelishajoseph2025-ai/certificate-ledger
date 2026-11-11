@@ -42,6 +42,7 @@ const codeFiles = srcFiles.filter((p) => {
       'src/lib/classifier.ts',
       'src/lib/fuzzy.ts',
       'src/lib/ledgerEngine.ts',
+      'src/lib/ledgerPersistence.ts',
     ].includes(r)
   )
     return false;
