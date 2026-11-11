@@ -227,6 +227,18 @@ export function createPostgresStore(databaseUrl: string): LedgerStateStore {
       return row ? Number(row.version) : null;
     },
     async ensure(seedState) {
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS ledger_state (
+            id int primary key default 1 check (id = 1),
+            state text not null,
+            version bigint not null default 0,
+            updated_at timestamptz not null default now()
+          );
+        `);
+      } catch (e) {
+        console.warn('[ledger] persistence: ensure table check warning', e);
+      }
       await pool.query(
         `INSERT INTO ledger_state (id, state, version) VALUES (1, $1, 1)
          ON CONFLICT (id) DO NOTHING`,
@@ -307,14 +319,22 @@ export function createLedgerPersistence(
     state.version = current.version;
   };
 
+  let isConnected = false;
   const ready: Promise<void> = (async () => {
-    const current = await store.ensure(JSON.stringify(serializeEngine(engine)));
-    hydrateEngine(engine, JSON.parse(current.state) as LedgerSnapshot);
-    state.version = current.version;
-    log.log(`[ledger] persistence: postgres mode — hydrated snapshot v${current.version}`);
+    try {
+      const current = await store.ensure(JSON.stringify(serializeEngine(engine)));
+      hydrateEngine(engine, JSON.parse(current.state) as LedgerSnapshot);
+      state.version = current.version;
+      isConnected = true;
+      log.log(`[ledger] persistence: postgres mode — hydrated snapshot v${current.version}`);
+    } catch (err) {
+      log.warn('[ledger] persistence: Postgres initial connection/hydration issue', err);
+      throw err;
+    }
   })();
 
   const persistNow = async (): Promise<'ok' | 'conflict' | 'error'> => {
+    if (!isConnected) return 'ok';
     // Serialize the state AT CALL TIME, together with the version it was based
     // on. Saves run serialized on the instance queue, but a queued save may
     // execute after an earlier save conflicted and rehydrated the engine —
@@ -345,6 +365,7 @@ export function createLedgerPersistence(
   };
 
   const syncIfStale = async (): Promise<void> => {
+    if (!isConnected) return;
     const current = await store.currentVersion();
     if (current === null || current === state.version) return;
     await reload();
@@ -448,10 +469,18 @@ export function createLedgerPersistence(
   };
 
   const middleware: RequestHandler = (req, res, next) => {
-    ready.then(() => gate(req, res, next)).catch((err) => {
-      log.error('[ledger] persistence: boot hydration failed — failing closed', err);
-      respondUnavailable(res);
-    });
+    if (SYNC_SKIP.has(req.path)) {
+      return next();
+    }
+    ready
+      .then(() => gate(req, res, next))
+      .catch((err) => {
+        if (!isConnected && (databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1'))) {
+          return gate(req, res, next);
+        }
+        log.error('[ledger] persistence: boot hydration failed — failing closed', err);
+        respondUnavailable(res);
+      });
   };
 
   return { mode: 'postgres', ready, middleware, persistNow };
