@@ -2072,61 +2072,72 @@ function hydrateEngine(engine2, snapshot) {
   counters.nextCandidateId = maxMapId(engine2.duplicateCandidates) + 1;
 }
 function sslFor(databaseUrl) {
-  let mode = null;
-  try {
-    mode = new URL(databaseUrl).searchParams.get("sslmode");
-  } catch {
-    if (/[?&]sslmode=disable(?:&|$)/.test(databaseUrl)) return void 0;
-    return { rejectUnauthorized: false };
+  if (/[?&]sslmode=disable(?:[&#]|$)/i.test(databaseUrl)) {
+    return void 0;
   }
-  if (mode === "disable") return void 0;
   return { rejectUnauthorized: false };
 }
 function stripTlsParams(databaseUrl) {
-  try {
-    const u = new URL(databaseUrl);
-    u.searchParams.delete("sslmode");
-    u.searchParams.delete("ssl");
-    u.searchParams.delete("sslnegotiation");
-    return u.toString();
-  } catch {
-    return databaseUrl;
-  }
+  return databaseUrl.replace(/([?&])(sslmode|ssl|sslnegotiation)=[^&#]*/gi, "").replace(/[?&]&+/g, "?").replace(/[?&]$/, "");
 }
 function createPostgresStore(databaseUrl) {
+  const isSupabaseDirect = databaseUrl.includes(".supabase.co") && !databaseUrl.includes("pooler.supabase.com");
   const pool = new Pool({
     connectionString: stripTlsParams(databaseUrl),
     max: 4,
     idleTimeoutMillis: 1e4,
-    connectionTimeoutMillis: 8e3,
+    connectionTimeoutMillis: 1e4,
     ssl: sslFor(databaseUrl)
   });
   pool.on("error", (err) => {
     console.error("[ledger] persistence: idle client error", err);
   });
+  function annotateError(err) {
+    if (!err) return err;
+    if (isSupabaseDirect && (err.code === "ETIMEDOUT" || err.code === "ENOTFOUND" || err.message?.includes("timeout"))) {
+      err.message = `${err.message} (Supabase direct host db.[ref].supabase.co is IPv6-only on free tier and cannot be reached from Vercel Lambda IPv4. Please switch DATABASE_URL to the Supabase Transaction Pooler URL on port 6543: aws-0-[region].pooler.supabase.com:6543).`;
+    } else if (err.code === "28P01" || err.message?.includes("password authentication")) {
+      err.message = `${err.message} (Database password incorrect. Please update the password in DATABASE_URL in Vercel settings or reset it in Supabase Project Settings -> Database).`;
+    } else if (err.message?.includes("Tenant or user not found")) {
+      err.message = `${err.message} (Supabase Pooler requires username in the format postgres.[project-ref], e.g. postgres.abcdef:password@aws-0-...pooler.supabase.com:6543/postgres).`;
+    }
+    return err;
+  }
   return {
     async currentVersion() {
-      const r = await pool.query(`SELECT version FROM ledger_state WHERE id = 1`);
-      const row = r.rows[0];
-      return row ? Number(row.version) : null;
+      try {
+        const r = await pool.query(`SELECT version FROM ledger_state WHERE id = 1`);
+        const row = r.rows[0];
+        return row ? Number(row.version) : null;
+      } catch (err) {
+        throw annotateError(err);
+      }
     },
     async load() {
-      const r = await pool.query(
-        `SELECT state, version FROM ledger_state WHERE id = 1`
-      );
-      const row = r.rows[0];
-      return row ? { state: row.state, version: Number(row.version) } : null;
+      try {
+        const r = await pool.query(
+          `SELECT state, version FROM ledger_state WHERE id = 1`
+        );
+        const row = r.rows[0];
+        return row ? { state: row.state, version: Number(row.version) } : null;
+      } catch (err) {
+        throw annotateError(err);
+      }
     },
     async save(state, expectedVersion) {
-      const r = await pool.query(
-        `UPDATE ledger_state
-            SET state = $1, version = version + 1, updated_at = now()
-          WHERE id = 1 AND version = $2
-          RETURNING version`,
-        [state, expectedVersion]
-      );
-      const row = r.rows[0];
-      return row ? Number(row.version) : null;
+      try {
+        const r = await pool.query(
+          `UPDATE ledger_state
+              SET state = $1, version = version + 1, updated_at = now()
+            WHERE id = 1 AND version = $2
+            RETURNING version`,
+          [state, expectedVersion]
+        );
+        const row = r.rows[0];
+        return row ? Number(row.version) : null;
+      } catch (err) {
+        throw annotateError(err);
+      }
     },
     async ensure(seedState) {
       try {
@@ -2141,14 +2152,76 @@ function createPostgresStore(databaseUrl) {
       } catch (e) {
         console.warn("[ledger] persistence: ensure table check warning", e);
       }
-      await pool.query(
-        `INSERT INTO ledger_state (id, state, version) VALUES (1, $1, 1)
-         ON CONFLICT (id) DO NOTHING`,
-        [seedState]
-      );
-      const current = await this.load();
-      if (!current) throw new Error("ledger_state row missing after ensure");
-      return current;
+      try {
+        await pool.query(
+          `INSERT INTO ledger_state (id, state, version) VALUES (1, $1, 1)
+           ON CONFLICT (id) DO NOTHING`,
+          [seedState]
+        );
+        const current = await this.load();
+        if (!current) throw new Error("ledger_state row missing after ensure");
+        return current;
+      } catch (err) {
+        throw annotateError(err);
+      }
+    }
+  };
+}
+function createSupabaseRestStore(supabaseUrl, serviceKey) {
+  const base = supabaseUrl.replace(/\/+$/, "");
+  const headers = {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    "Content-Type": "application/json"
+  };
+  return {
+    async currentVersion() {
+      const res = await fetch(`${base}/rest/v1/ledger_state?id=eq.1&select=version`, { headers });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return rows[0] ? Number(rows[0].version) : null;
+    },
+    async load() {
+      const res = await fetch(`${base}/rest/v1/ledger_state?id=eq.1&select=state,version`, { headers });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return rows[0] ? { state: rows[0].state, version: Number(rows[0].version) } : null;
+    },
+    async save(state, expectedVersion) {
+      const res = await fetch(`${base}/rest/v1/ledger_state?id=eq.1&version=eq.${expectedVersion}`, {
+        method: "PATCH",
+        headers: {
+          ...headers,
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          state,
+          version: expectedVersion + 1,
+          updated_at: (/* @__PURE__ */ new Date()).toISOString()
+        })
+      });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return rows[0] ? Number(rows[0].version) : null;
+    },
+    async ensure(seedState) {
+      const existing = await this.load();
+      if (existing) return existing;
+      await fetch(`${base}/rest/v1/ledger_state`, {
+        method: "POST",
+        headers: {
+          ...headers,
+          Prefer: "resolution=ignore-duplicates,return=representation"
+        },
+        body: JSON.stringify({
+          id: 1,
+          state: seedState,
+          version: 1
+        })
+      });
+      const loaded = await this.load();
+      if (!loaded) throw new Error("ledger_state missing in Supabase after ensure");
+      return loaded;
     }
   };
 }
@@ -2160,22 +2233,49 @@ var PERSIST_SKIP = /* @__PURE__ */ new Set([
 ]);
 var SYNC_SKIP = /* @__PURE__ */ new Set([
   "/api/health",
+  "/api/health/db-check",
   "/api/branding",
   "/api/auth/me",
   "/api/meta/problems",
   "/api/demo/csv"
 ]);
+function resolveDatabaseUrl(explicit) {
+  return explicit || process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.SUPABASE_DB_URL || process.env.SUPABASE_DATABASE_URL || "";
+}
+function resolveSupabaseRest() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || "";
+  if (url && key) return { url, key };
+  return null;
+}
 function createLedgerPersistence(engine2, opts = {}) {
   const log = opts.logger ?? console;
-  const databaseUrl = opts.databaseUrl ?? process.env.DATABASE_URL ?? "";
-  const store = opts.store ?? (databaseUrl ? createPostgresStore(databaseUrl) : null);
+  const databaseUrl = resolveDatabaseUrl(opts.databaseUrl);
+  const supabaseRest = resolveSupabaseRest();
+  let store = opts.store ?? null;
+  let mode = "memory";
   if (!store) {
-    log.log("[ledger] persistence: memory-only mode (DATABASE_URL not set) \u2014 state resets on restart");
+    if (databaseUrl && !databaseUrl.includes("localhost") && !databaseUrl.includes("127.0.0.1")) {
+      store = createPostgresStore(databaseUrl);
+      mode = "postgres";
+    } else if (databaseUrl) {
+      store = createPostgresStore(databaseUrl);
+      mode = "postgres";
+    } else if (supabaseRest) {
+      store = createSupabaseRestStore(supabaseRest.url, supabaseRest.key);
+      mode = "supabase-rest";
+    }
+  } else {
+    mode = "postgres";
+  }
+  if (!store) {
+    log.log("[ledger] persistence: memory-only mode (no DATABASE_URL or Supabase keys set) \u2014 state resets on restart");
     return {
       mode: "memory",
       ready: Promise.resolve(),
       middleware: (_req, _res, next) => next(),
-      persistNow: async () => "ok"
+      persistNow: async () => "ok",
+      getLastError: () => null
     };
   }
   const state = {
@@ -2184,6 +2284,7 @@ function createLedgerPersistence(engine2, opts = {}) {
     queue: Promise.resolve()
   };
   const reload = async () => {
+    if (!store) return;
     const current = await store.load();
     if (!current) {
       const created = await store.ensure(JSON.stringify(serializeEngine(engine2)));
@@ -2195,15 +2296,36 @@ function createLedgerPersistence(engine2, opts = {}) {
     state.version = current.version;
   };
   let isConnected = false;
+  let lastError = null;
   const ready = (async () => {
     try {
+      if (!store) return;
       const current = await store.ensure(JSON.stringify(serializeEngine(engine2)));
       hydrateEngine(engine2, JSON.parse(current.state));
       state.version = current.version;
       isConnected = true;
-      log.log(`[ledger] persistence: postgres mode \u2014 hydrated snapshot v${current.version}`);
+      lastError = null;
+      log.log(`[ledger] persistence: ${mode} mode \u2014 hydrated snapshot v${current.version}`);
     } catch (err) {
-      log.warn("[ledger] persistence: Postgres initial connection/hydration issue", err);
+      lastError = err;
+      log.warn(`[ledger] persistence: ${mode} connection/hydration issue:`, err?.message || err);
+      if (mode === "postgres" && supabaseRest) {
+        log.log("[ledger] persistence: attempting fallback to Supabase REST store...");
+        try {
+          const restStore = createSupabaseRestStore(supabaseRest.url, supabaseRest.key);
+          const current = await restStore.ensure(JSON.stringify(serializeEngine(engine2)));
+          hydrateEngine(engine2, JSON.parse(current.state));
+          store = restStore;
+          mode = "supabase-rest";
+          state.version = current.version;
+          isConnected = true;
+          lastError = null;
+          log.log(`[ledger] persistence: Supabase REST fallback succeeded \u2014 hydrated snapshot v${current.version}`);
+          return;
+        } catch (restErr) {
+          log.warn("[ledger] persistence: Supabase REST fallback also failed:", restErr?.message || restErr);
+        }
+      }
       throw err;
     }
   })();
@@ -2332,7 +2454,15 @@ function createLedgerPersistence(engine2, opts = {}) {
       respondUnavailable(res);
     });
   };
-  return { mode: "postgres", ready, middleware, persistNow };
+  return {
+    get mode() {
+      return mode;
+    },
+    ready,
+    middleware,
+    persistNow,
+    getLastError: () => lastError
+  };
 }
 
 // server.ts
@@ -2406,9 +2536,12 @@ app.get("/api", (_req, res) => {
 var ledgerPersistence = createLedgerPersistence(engine);
 app.use(ledgerPersistence.middleware);
 var dbReady = ledgerPersistence.mode === "memory";
+var lastDbError = null;
 ledgerPersistence.ready.then(() => {
   dbReady = true;
-}).catch(() => {
+  lastDbError = null;
+}).catch((err) => {
+  lastDbError = err?.message || String(err);
   if (process.env.DATABASE_URL?.includes("localhost") || process.env.DATABASE_URL?.includes("127.0.0.1")) {
     dbReady = true;
   } else {
@@ -2478,7 +2611,112 @@ app.get("/api/health", (_req, res) => {
   const isLocalDevFallback = ledgerPersistence.mode === "postgres" && !dbReady && (process.env.DATABASE_URL?.includes("localhost") || process.env.DATABASE_URL?.includes("127.0.0.1"));
   const effectiveMode = isLocalDevFallback ? "memory" : ledgerPersistence.mode;
   const db = effectiveMode === "memory" ? true : dbReady;
-  res.json({ ok: true, db, mode: effectiveMode });
+  const errorMsg = db ? null : ledgerPersistence.getLastError?.()?.message || lastDbError;
+  res.json({
+    ok: true,
+    db,
+    mode: effectiveMode,
+    ...db ? {} : { dbError: errorMsg }
+  });
+});
+app.get("/api/health/db-check", async (_req, res) => {
+  const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.SUPABASE_DB_URL || "";
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || "";
+  const diagnostics = {
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    currentMode: ledgerPersistence.mode,
+    dbReady,
+    lastError: ledgerPersistence.getLastError?.()?.message || lastDbError || null,
+    envVars: {
+      has_DATABASE_URL: Boolean(process.env.DATABASE_URL),
+      has_POSTGRES_URL: Boolean(process.env.POSTGRES_URL),
+      has_POSTGRES_PRISMA_URL: Boolean(process.env.POSTGRES_PRISMA_URL),
+      has_SUPABASE_URL: Boolean(supabaseUrl),
+      has_SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+      has_SUPABASE_KEY: Boolean(process.env.SUPABASE_KEY),
+      has_SUPABASE_ANON_KEY: Boolean(process.env.SUPABASE_ANON_KEY)
+    }
+  };
+  if (dbUrl) {
+    try {
+      const match = dbUrl.match(/^(postgres(?:ql)?:\/\/)([^:]+):([^@]+)@([^:/]+)(?::(\d+))?(\/[^?#]*)?(.*)?$/);
+      if (match) {
+        const [, , user, pass, host, port = "5432", dbName = "", query = ""] = match;
+        const isPlaceholderPassword = pass === "[YOUR-PASSWORD]" || pass.includes("[") || pass.includes("YOUR-PASSWORD");
+        const isDirectConnection = host.startsWith("db.") && host.endsWith(".supabase.co") && port === "5432";
+        const isPoolerConnection = host.includes("pooler.supabase.com");
+        diagnostics.connectionString = {
+          user: user.slice(0, 3) + "***",
+          host: host.slice(0, 4) + "***" + host.slice(-12),
+          port,
+          database: dbName.replace("/", ""),
+          hasQueryParams: Boolean(query),
+          isPlaceholderPassword,
+          isDirectConnection,
+          isPoolerConnection
+        };
+        if (isPlaceholderPassword) {
+          diagnostics.recommendation = 'CRITICAL: Your DATABASE_URL contains "[YOUR-PASSWORD]". Replace it with the real database password you set when creating the Supabase project.';
+        } else if (isDirectConnection) {
+          diagnostics.warning = 'WARNING: Direct connection "db.[ref].supabase.co:5432" resolves to IPv6 only on Supabase free tier. Vercel serverless functions run on IPv4 and cannot reach IPv6 hosts. Use the Supabase Transaction Pooler URL ("aws-0-[region].pooler.supabase.com:6543") instead.';
+        }
+      } else {
+        diagnostics.connectionString = { malformed: true, rawLength: dbUrl.length };
+      }
+    } catch {
+      diagnostics.connectionString = { error: "Failed to parse connection string structure" };
+    }
+    try {
+      const { Pool: Pool2 } = await import("pg");
+      const testPool = new Pool2({
+        connectionString: dbUrl.replace(/([?&])(sslmode|ssl|sslnegotiation)=[^&#]*/gi, ""),
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 4e3
+      });
+      const t0 = Date.now();
+      const testRes = await testPool.query("SELECT 1 as test");
+      const latencyMs = Date.now() - t0;
+      await testPool.end();
+      diagnostics.postgresProbe = {
+        success: true,
+        latencyMs,
+        result: testRes.rows[0]
+      };
+    } catch (probeErr) {
+      diagnostics.postgresProbe = {
+        success: false,
+        code: probeErr.code,
+        message: probeErr.message
+      };
+    }
+  }
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const restEndpoint = `${supabaseUrl.replace(/\/+$/, "")}/rest/v1/ledger_state?select=version&limit=1`;
+      const t0 = Date.now();
+      const res2 = await fetch(restEndpoint, {
+        method: "GET",
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`
+        }
+      });
+      const latencyMs = Date.now() - t0;
+      const text = await res2.text();
+      diagnostics.supabaseRestProbe = {
+        status: res2.status,
+        latencyMs,
+        response: text.slice(0, 300)
+      };
+    } catch (restErr) {
+      diagnostics.supabaseRestProbe = {
+        success: false,
+        message: restErr.message
+      };
+    }
+  }
+  res.json(diagnostics);
 });
 app.get("/api/health/ledger", requireOrganizer, (_req, res) => {
   const health = engine.checkLedgerHealth();
@@ -3048,7 +3286,7 @@ async function startServer() {
     viteModule
   );
   const vite = await createViteServer({
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false },
     appType: "spa"
   });
   app.use(vite.middlewares);

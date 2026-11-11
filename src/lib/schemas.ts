@@ -8,10 +8,14 @@ export const errorSchema = z.object({
   }),
 });
 
-export const healthSchema = z.object({
-  ok: z.boolean(),
-  db: z.boolean(),
-});
+export const healthSchema = z
+  .object({
+    ok: z.boolean(),
+    db: z.boolean(),
+    mode: z.string().optional(),
+    dbError: z.string().nullable().optional(),
+  })
+  .passthrough();
 
 export const meSchema = z.object({
   authenticated: z.boolean(),

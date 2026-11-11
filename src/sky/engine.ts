@@ -219,10 +219,15 @@ export class SkyEngine {
     this.disposed = true;
     window.cancelAnimationFrame(this.raf);
     this.observer?.disconnect();
-    this.starMat.dispose();
-    this.nebulaMat.dispose();
-    this.stars.geometry.dispose();
-    this.nebula.geometry.dispose();
-    this.renderer.dispose();
+    this.starMat?.dispose();
+    this.nebulaMat?.dispose();
+    this.stars?.geometry?.dispose();
+    this.nebula?.geometry?.dispose();
+    try {
+      this.renderer?.dispose();
+      this.renderer?.forceContextLoss?.();
+    } catch {
+      // Ignore cleanup error
+    }
   }
 }

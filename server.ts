@@ -99,11 +99,14 @@ app.use(ledgerPersistence.middleware);
 
 // Track DB readiness for the health endpoint.
 let dbReady = ledgerPersistence.mode === 'memory'; // memory = always ready
+let lastDbError: string | null = null;
 ledgerPersistence.ready
   .then(() => {
     dbReady = true;
+    lastDbError = null;
   })
-  .catch(() => {
+  .catch((err: any) => {
+    lastDbError = err?.message || String(err);
     if (process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1')) {
       dbReady = true;
     } else {
@@ -214,7 +217,132 @@ app.get('/api/health', (_req: Request, res: Response) => {
     (process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1'));
   const effectiveMode = isLocalDevFallback ? 'memory' : ledgerPersistence.mode;
   const db = effectiveMode === 'memory' ? true : dbReady;
-  res.json({ ok: true, db, mode: effectiveMode });
+  const errorMsg = db ? null : (ledgerPersistence.getLastError?.()?.message || lastDbError);
+  res.json({
+    ok: true,
+    db,
+    mode: effectiveMode,
+    ...(db ? {} : { dbError: errorMsg }),
+  });
+});
+
+app.get('/api/health/db-check', async (_req: Request, res: Response) => {
+  const dbUrl =
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRES_PRISMA_URL ||
+    process.env.SUPABASE_DB_URL ||
+    '';
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    '';
+
+  const diagnostics: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    currentMode: ledgerPersistence.mode,
+    dbReady,
+    lastError: ledgerPersistence.getLastError?.()?.message || lastDbError || null,
+    envVars: {
+      has_DATABASE_URL: Boolean(process.env.DATABASE_URL),
+      has_POSTGRES_URL: Boolean(process.env.POSTGRES_URL),
+      has_POSTGRES_PRISMA_URL: Boolean(process.env.POSTGRES_PRISMA_URL),
+      has_SUPABASE_URL: Boolean(supabaseUrl),
+      has_SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+      has_SUPABASE_KEY: Boolean(process.env.SUPABASE_KEY),
+      has_SUPABASE_ANON_KEY: Boolean(process.env.SUPABASE_ANON_KEY),
+    },
+  };
+
+  if (dbUrl) {
+    try {
+      const match = dbUrl.match(/^(postgres(?:ql)?:\/\/)([^:]+):([^@]+)@([^:/]+)(?::(\d+))?(\/[^?#]*)?(.*)?$/);
+      if (match) {
+        const [, , user, pass, host, port = '5432', dbName = '', query = ''] = match;
+        const isPlaceholderPassword = pass === '[YOUR-PASSWORD]' || pass.includes('[') || pass.includes('YOUR-PASSWORD');
+        const isDirectConnection = host.startsWith('db.') && host.endsWith('.supabase.co') && port === '5432';
+        const isPoolerConnection = host.includes('pooler.supabase.com');
+
+        diagnostics.connectionString = {
+          user: user.slice(0, 3) + '***',
+          host: host.slice(0, 4) + '***' + host.slice(-12),
+          port,
+          database: dbName.replace('/', ''),
+          hasQueryParams: Boolean(query),
+          isPlaceholderPassword,
+          isDirectConnection,
+          isPoolerConnection,
+        };
+
+        if (isPlaceholderPassword) {
+          diagnostics.recommendation =
+            'CRITICAL: Your DATABASE_URL contains "[YOUR-PASSWORD]". Replace it with the real database password you set when creating the Supabase project.';
+        } else if (isDirectConnection) {
+          diagnostics.warning =
+            'WARNING: Direct connection "db.[ref].supabase.co:5432" resolves to IPv6 only on Supabase free tier. Vercel serverless functions run on IPv4 and cannot reach IPv6 hosts. Use the Supabase Transaction Pooler URL ("aws-0-[region].pooler.supabase.com:6543") instead.';
+        }
+      } else {
+        diagnostics.connectionString = { malformed: true, rawLength: dbUrl.length };
+      }
+    } catch {
+      diagnostics.connectionString = { error: 'Failed to parse connection string structure' };
+    }
+
+    try {
+      const { Pool } = await import('pg');
+      const testPool = new Pool({
+        connectionString: dbUrl.replace(/([?&])(sslmode|ssl|sslnegotiation)=[^&#]*/gi, ''),
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 4000,
+      });
+      const t0 = Date.now();
+      const testRes = await testPool.query('SELECT 1 as test');
+      const latencyMs = Date.now() - t0;
+      await testPool.end();
+      diagnostics.postgresProbe = {
+        success: true,
+        latencyMs,
+        result: testRes.rows[0],
+      };
+    } catch (probeErr: any) {
+      diagnostics.postgresProbe = {
+        success: false,
+        code: probeErr.code,
+        message: probeErr.message,
+      };
+    }
+  }
+
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const restEndpoint = `${supabaseUrl.replace(/\/+$/, '')}/rest/v1/ledger_state?select=version&limit=1`;
+      const t0 = Date.now();
+      const res = await fetch(restEndpoint, {
+        method: 'GET',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+        },
+      });
+      const latencyMs = Date.now() - t0;
+      const text = await res.text();
+      diagnostics.supabaseRestProbe = {
+        status: res.status,
+        latencyMs,
+        response: text.slice(0, 300),
+      };
+    } catch (restErr: any) {
+      diagnostics.supabaseRestProbe = {
+        success: false,
+        message: restErr.message,
+      };
+    }
+  }
+
+  res.json(diagnostics);
 });
 
 app.get('/api/health/ledger', requireOrganizer, (_req: Request, res: Response) => {
@@ -912,7 +1040,7 @@ async function startServer() {
   const viteModule = 'vite';
   const { createServer: createViteServer } = await import(/* @vite-ignore */ viteModule);
   const vite = await createViteServer({
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false },
     appType: 'spa',
   });
 

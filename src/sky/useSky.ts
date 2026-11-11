@@ -4,6 +4,20 @@ import {SKY_THEME_EVENT} from './events';
 import {SkyEngine} from './engine';
 import type {ThemeName} from '@/theme/themes';
 
+function isWebGLAvailable(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const probe = document.createElement('canvas');
+    return Boolean(
+      (window.WebGL2RenderingContext && probe.getContext('webgl2')) ||
+      probe.getContext('webgl') ||
+      probe.getContext('experimental-webgl'),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function useSky(enabled: boolean) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<SkyEngine | null>(null);
@@ -19,12 +33,12 @@ export function useSky(enabled: boolean) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    if (!isWebGLAvailable()) {
+      setWebgl(false);
+      return;
+    }
+
     try {
-      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-      if (!gl) {
-        setWebgl(false);
-        return;
-      }
       const engine = new SkyEngine({canvas, theme, reducedMotion: reduceMotion});
       engineRef.current = engine;
       setWebgl(true);
@@ -42,7 +56,13 @@ export function useSky(enabled: boolean) {
       setWebgl(false);
       return;
     }
-  }, [enabled, reduceMotion, theme]);
+  }, [enabled, reduceMotion]);
+
+  useEffect(() => {
+    if (engineRef.current) {
+      engineRef.current.setTheme(theme);
+    }
+  }, [theme]);
 
   useEffect(() => {
     const onTheme = (event: Event) => {
