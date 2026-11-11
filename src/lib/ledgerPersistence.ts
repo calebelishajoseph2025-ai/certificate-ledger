@@ -179,17 +179,40 @@ export function stripTlsParams(databaseUrl: string): string {
     .replace(/[?&]$/, '');
 }
 
-export function createPostgresStore(databaseUrl: string): LedgerStateStore {
+async function queryWithRetry<T extends Record<string, any> = any>(
+  pool: Pool,
+  text: string,
+  values?: any[]
+): Promise<{ rows: T[] }> {
+  try {
+    return await pool.query<T>(text, values);
+  } catch (err: any) {
+    const isConnErr =
+      err?.message?.includes('Connection terminated') ||
+      err?.message?.includes('connection timeout') ||
+      err?.code === 'ECONNRESET' ||
+      err?.code === 'EPIPE' ||
+      err?.code === 'ETIMEDOUT';
+    if (isConnErr) {
+      return await pool.query<T>(text, values);
+    }
+    throw err;
+  }
+}
+
+export function createPostgresStore(databaseUrl: string, unpooledUrl?: string): LedgerStateStore {
   const isSupabaseDirect = databaseUrl.includes('.supabase.co') && !databaseUrl.includes('pooler.supabase.com');
+  const poolLimit = Math.max(1, Math.min(20, Number(process.env.PG_POOL_MAX || 5)));
   const pool = new Pool({
     connectionString: stripTlsParams(databaseUrl),
-    max: 4,
-    idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 10_000,
+    max: poolLimit,
+    idleTimeoutMillis: 5_000,
+    connectionTimeoutMillis: 8_000,
+    allowExitOnIdle: true,
     ssl: sslFor(databaseUrl),
   });
-  pool.on('error', (err) => {
-    console.error('[ledger] persistence: idle client error', err);
+  pool.on('error', (err: any) => {
+    console.error('[ledger] persistence: idle client error', err?.message || err);
   });
 
   function annotateError(err: any): Error {
@@ -207,7 +230,7 @@ export function createPostgresStore(databaseUrl: string): LedgerStateStore {
   return {
     async currentVersion() {
       try {
-        const r = await pool.query<{ version: number }>(`SELECT version FROM ledger_state WHERE id = 1`);
+        const r = await queryWithRetry<{ version: number }>(pool, `SELECT version FROM ledger_state WHERE id = 1`);
         const row = r.rows[0];
         return row ? Number(row.version) : null;
       } catch (err) {
@@ -216,7 +239,8 @@ export function createPostgresStore(databaseUrl: string): LedgerStateStore {
     },
     async load() {
       try {
-        const r = await pool.query<{ state: string; version: number }>(
+        const r = await queryWithRetry<{ state: string; version: number }>(
+          pool,
           `SELECT state, version FROM ledger_state WHERE id = 1`
         );
         const row = r.rows[0];
@@ -227,7 +251,8 @@ export function createPostgresStore(databaseUrl: string): LedgerStateStore {
     },
     async save(state, expectedVersion) {
       try {
-        const r = await pool.query<{ version: number }>(
+        const r = await queryWithRetry<{ version: number }>(
+          pool,
           `UPDATE ledger_state
               SET state = $1, version = version + 1, updated_at = now()
             WHERE id = 1 AND version = $2
@@ -241,20 +266,50 @@ export function createPostgresStore(databaseUrl: string): LedgerStateStore {
       }
     },
     async ensure(seedState) {
+      // 1. Fast path: check if table already exists and has row 1 without sending DDL over pooler
       try {
-        await pool.query(`
-          CREATE TABLE IF NOT EXISTS ledger_state (
-            id int primary key default 1 check (id = 1),
-            state text not null,
-            version bigint not null default 0,
-            updated_at timestamptz not null default now()
-          );
-        `);
-      } catch (e) {
-        console.warn('[ledger] persistence: ensure table check warning', e);
+        const check = await queryWithRetry<{ state: string; version: number }>(
+          pool,
+          `SELECT state, version FROM ledger_state WHERE id = 1`
+        );
+        if (check.rows[0]) {
+          return { state: check.rows[0].state, version: Number(check.rows[0].version) };
+        }
+      } catch (err: any) {
+        const needsCreate =
+          err?.code === '42P01' ||
+          err?.message?.includes('does not exist') ||
+          err?.message?.includes('relation "ledger_state"');
+        if (needsCreate) {
+          const ddlTarget = unpooledUrl || databaseUrl;
+          try {
+            const ddlPool = new Pool({
+              connectionString: stripTlsParams(ddlTarget),
+              max: 1,
+              connectionTimeoutMillis: 10_000,
+              ssl: sslFor(ddlTarget),
+            });
+            await ddlPool.query(`
+              CREATE TABLE IF NOT EXISTS ledger_state (
+                id int primary key default 1 check (id = 1),
+                state text not null,
+                version bigint not null default 0,
+                updated_at timestamptz not null default now()
+              );
+            `);
+            await ddlPool.end().catch(() => undefined);
+          } catch (createErr) {
+            console.warn('[ledger] persistence: ensure table creation notice', createErr);
+          }
+        } else {
+          throw annotateError(err);
+        }
       }
+
+      // 2. Insert initial seed row
       try {
-        await pool.query(
+        await queryWithRetry(
+          pool,
           `INSERT INTO ledger_state (id, state, version) VALUES (1, $1, 1)
            ON CONFLICT (id) DO NOTHING`,
           [seedState]
@@ -336,14 +391,15 @@ export function createSupabaseRestStore(supabaseUrl: string, serviceKey: string)
 // ---------------------------------------------------------------------------
 
 export interface LedgerPersistenceHandle {
-  mode: 'postgres' | 'supabase-rest' | 'memory';
+  readonly mode: 'postgres' | 'supabase-rest' | 'memory';
   /** Resolves once boot hydration finished. Rejects (fail-closed) when the DB is unusable. */
   ready: Promise<void>;
   /** Install with app.use(...) BEFORE the API routes. */
   middleware: RequestHandler;
   /** Persist the current engine state now (used by tests and the smoke script). */
   persistNow(): Promise<'ok' | 'conflict' | 'error'>;
-  getLastError?(): Error | null;
+  getLastError(): Error | null;
+  checkHealth(): Promise<boolean>;
 }
 
 /** Mutating routes that never change engine state (session/cookie or read-only). */
@@ -364,25 +420,37 @@ const SYNC_SKIP = new Set([
   '/api/demo/csv',
 ]);
 
-function resolveDatabaseUrl(explicit?: string): string {
+export function resolveDatabaseUrl(explicit?: string): string {
   return (
     explicit ||
     process.env.DATABASE_URL ||
     process.env.POSTGRES_URL ||
     process.env.POSTGRES_PRISMA_URL ||
+    process.env.DATABASE_URL_UNPOOLED ||
+    process.env.POSTGRES_URL_NON_POOLING ||
     process.env.SUPABASE_DB_URL ||
     process.env.SUPABASE_DATABASE_URL ||
     ''
   );
 }
 
-function resolveSupabaseRest(): { url: string; key: string } | null {
+export function resolveDatabaseUrlUnpooled(): string {
+  return (
+    process.env.DATABASE_URL_UNPOOLED ||
+    process.env.POSTGRES_URL_NON_POOLING ||
+    ''
+  );
+}
+
+export function resolveSupabaseRest(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const key =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
     process.env.SUPABASE_SERVICE_KEY ||
     process.env.SUPABASE_KEY ||
     process.env.SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
     '';
   if (url && key) return { url, key };
   return null;
@@ -390,10 +458,16 @@ function resolveSupabaseRest(): { url: string; key: string } | null {
 
 export function createLedgerPersistence(
   engine: LedgerEngine,
-  opts: { databaseUrl?: string; store?: LedgerStateStore; logger?: { log: (...a: unknown[]) => void; error: (...a: unknown[]) => void; warn: (...a: unknown[]) => void } } = {}
+  opts: {
+    databaseUrl?: string;
+    databaseUrlUnpooled?: string;
+    store?: LedgerStateStore;
+    logger?: { log: (...a: unknown[]) => void; error: (...a: unknown[]) => void; warn: (...a: unknown[]) => void };
+  } = {}
 ): LedgerPersistenceHandle {
   const log = opts.logger ?? console;
   const databaseUrl = resolveDatabaseUrl(opts.databaseUrl);
+  const databaseUrlUnpooled = opts.databaseUrlUnpooled || resolveDatabaseUrlUnpooled();
   const supabaseRest = resolveSupabaseRest();
 
   let store: LedgerStateStore | null = opts.store ?? null;
@@ -401,10 +475,10 @@ export function createLedgerPersistence(
 
   if (!store) {
     if (databaseUrl && !databaseUrl.includes('localhost') && !databaseUrl.includes('127.0.0.1')) {
-      store = createPostgresStore(databaseUrl);
+      store = createPostgresStore(databaseUrl, databaseUrlUnpooled);
       mode = 'postgres';
     } else if (databaseUrl) {
-      store = createPostgresStore(databaseUrl);
+      store = createPostgresStore(databaseUrl, databaseUrlUnpooled);
       mode = 'postgres';
     } else if (supabaseRest) {
       store = createSupabaseRestStore(supabaseRest.url, supabaseRest.key);
@@ -422,6 +496,7 @@ export function createLedgerPersistence(
       middleware: (_req: Request, _res: Response, next: NextFunction) => next(),
       persistNow: async () => 'ok',
       getLastError: () => null,
+      checkHealth: async () => true,
     };
   }
 
@@ -447,42 +522,74 @@ export function createLedgerPersistence(
 
   let isConnected = false;
   let lastError: Error | null = null;
+  let connectingPromise: Promise<void> | null = null;
 
-  const ready: Promise<void> = (async () => {
-    try {
-      if (!store) return;
-      const current = await store.ensure(JSON.stringify(serializeEngine(engine)));
-      hydrateEngine(engine, JSON.parse(current.state) as LedgerSnapshot);
-      state.version = current.version;
-      isConnected = true;
-      lastError = null;
-      log.log(`[ledger] persistence: ${mode} mode — hydrated snapshot v${current.version}`);
-    } catch (err: any) {
-      lastError = err;
-      log.warn(`[ledger] persistence: ${mode} connection/hydration issue:`, err?.message || err);
+  const connectAndHydrate = async (): Promise<void> => {
+    if (isConnected) return;
+    if (connectingPromise) return connectingPromise;
 
-      // If Postgres failed but Supabase REST is configured, try Supabase REST
-      if (mode === 'postgres' && supabaseRest) {
-        log.log('[ledger] persistence: attempting fallback to Supabase REST store...');
-        try {
-          const restStore = createSupabaseRestStore(supabaseRest.url, supabaseRest.key);
-          const current = await restStore.ensure(JSON.stringify(serializeEngine(engine)));
-          hydrateEngine(engine, JSON.parse(current.state) as LedgerSnapshot);
-          store = restStore;
-          mode = 'supabase-rest';
-          state.version = current.version;
-          isConnected = true;
-          lastError = null;
-          log.log(`[ledger] persistence: Supabase REST fallback succeeded — hydrated snapshot v${current.version}`);
-          return;
-        } catch (restErr: any) {
-          log.warn('[ledger] persistence: Supabase REST fallback also failed:', restErr?.message || restErr);
+    connectingPromise = (async () => {
+      try {
+        if (!store) return;
+        const current = await store.ensure(JSON.stringify(serializeEngine(engine)));
+        hydrateEngine(engine, JSON.parse(current.state) as LedgerSnapshot);
+        state.version = current.version;
+        isConnected = true;
+        lastError = null;
+        log.log(`[ledger] persistence: ${mode} mode — hydrated snapshot v${current.version}`);
+      } catch (err: any) {
+        lastError = err;
+        log.warn(`[ledger] persistence: ${mode} connection/hydration issue:`, err?.message || err);
+
+        // If Postgres failed but Supabase REST is configured, try Supabase REST
+        if (mode === 'postgres' && supabaseRest) {
+          log.log('[ledger] persistence: attempting fallback to Supabase REST store...');
+          try {
+            const restStore = createSupabaseRestStore(supabaseRest.url, supabaseRest.key);
+            const current = await restStore.ensure(JSON.stringify(serializeEngine(engine)));
+            hydrateEngine(engine, JSON.parse(current.state) as LedgerSnapshot);
+            store = restStore;
+            mode = 'supabase-rest';
+            state.version = current.version;
+            isConnected = true;
+            lastError = null;
+            log.log(`[ledger] persistence: Supabase REST fallback succeeded — hydrated snapshot v${current.version}`);
+            return;
+          } catch (restErr: any) {
+            log.warn('[ledger] persistence: Supabase REST fallback also failed:', restErr?.message || restErr);
+          }
         }
-      }
 
-      throw err;
+        // Allow retry on subsequent request
+        connectingPromise = null;
+        throw err;
+      }
+    })();
+
+    return connectingPromise;
+  };
+
+  // Trigger initial connect immediately, but don't crash if it fails during module load
+  const ready: Promise<void> = connectAndHydrate().catch((err) => {
+    throw err;
+  });
+
+  const checkHealth = async (): Promise<boolean> => {
+    if (isConnected && store) {
+      try {
+        const v = await store.currentVersion();
+        if (v !== null && v !== undefined) return true;
+      } catch {
+        // Will retry below
+      }
     }
-  })();
+    try {
+      await connectAndHydrate();
+      return isConnected;
+    } catch {
+      return false;
+    }
+  };
 
   const persistNow = async (): Promise<'ok' | 'conflict' | 'error'> => {
     if (!isConnected) return 'ok';
@@ -623,13 +730,13 @@ export function createLedgerPersistence(
     if (SYNC_SKIP.has(req.path)) {
       return next();
     }
-    ready
+    connectAndHydrate()
       .then(() => gate(req, res, next))
       .catch((err) => {
         if (!isConnected && (databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1'))) {
           return gate(req, res, next);
         }
-        log.error('[ledger] persistence: boot hydration failed — failing closed', err);
+        log.error('[ledger] persistence: request hydration failed — failing closed', err?.message || err);
         respondUnavailable(res);
       });
   };
@@ -642,5 +749,6 @@ export function createLedgerPersistence(
     middleware,
     persistNow,
     getLastError: () => lastError,
+    checkHealth,
   };
 }

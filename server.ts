@@ -210,13 +210,14 @@ function requireOrganizer(req: Request, res: Response, next: NextFunction) {
 // ----------------------------------------------------------------------------
 
 // 1. Health & Diagnostics
-app.get('/api/health', (_req: Request, res: Response) => {
+app.get('/api/health', async (_req: Request, res: Response) => {
+  const isHealthy = await ledgerPersistence.checkHealth();
   const isLocalDevFallback =
     ledgerPersistence.mode === 'postgres' &&
-    !dbReady &&
+    !isHealthy &&
     (process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1'));
   const effectiveMode = isLocalDevFallback ? 'memory' : ledgerPersistence.mode;
-  const db = effectiveMode === 'memory' ? true : dbReady;
+  const db = effectiveMode === 'memory' ? true : isHealthy;
   const errorMsg = db ? null : (ledgerPersistence.getLastError?.()?.message || lastDbError);
   res.json({
     ok: true,
@@ -227,33 +228,46 @@ app.get('/api/health', (_req: Request, res: Response) => {
 });
 
 app.get('/api/health/db-check', async (_req: Request, res: Response) => {
+  const isHealthy = await ledgerPersistence.checkHealth();
   const dbUrl =
     process.env.DATABASE_URL ||
     process.env.POSTGRES_URL ||
     process.env.POSTGRES_PRISMA_URL ||
+    process.env.DATABASE_URL_UNPOOLED ||
     process.env.SUPABASE_DB_URL ||
     '';
+  const unpooledUrl =
+    process.env.DATABASE_URL_UNPOOLED ||
+    process.env.POSTGRES_URL_NON_POOLING ||
+    '';
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const supabaseKey =
+  const serviceKey =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
     process.env.SUPABASE_SERVICE_KEY ||
     process.env.SUPABASE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
     '';
+  const anonKey =
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    '';
+  const activeSupabaseKey = serviceKey || anonKey;
 
   const diagnostics: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
     currentMode: ledgerPersistence.mode,
-    dbReady,
+    dbReady: isHealthy,
     lastError: ledgerPersistence.getLastError?.()?.message || lastDbError || null,
     envVars: {
       has_DATABASE_URL: Boolean(process.env.DATABASE_URL),
-      has_POSTGRES_URL: Boolean(process.env.POSTGRES_URL),
-      has_POSTGRES_PRISMA_URL: Boolean(process.env.POSTGRES_PRISMA_URL),
+      has_DATABASE_URL_UNPOOLED: Boolean(process.env.DATABASE_URL_UNPOOLED),
+      has_PG_POOL_MAX: Boolean(process.env.PG_POOL_MAX),
+      PG_POOL_MAX_value: process.env.PG_POOL_MAX || '5 (default)',
       has_SUPABASE_URL: Boolean(supabaseUrl),
       has_SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
-      has_SUPABASE_KEY: Boolean(process.env.SUPABASE_KEY),
+      has_SUPABASE_SECRET_KEY: Boolean(process.env.SUPABASE_SECRET_KEY),
       has_SUPABASE_ANON_KEY: Boolean(process.env.SUPABASE_ANON_KEY),
+      has_SUPABASE_PUBLISHABLE_KEY: Boolean(process.env.SUPABASE_PUBLISHABLE_KEY),
     },
   };
 
@@ -296,7 +310,7 @@ app.get('/api/health/db-check', async (_req: Request, res: Response) => {
       const testPool = new Pool({
         connectionString: dbUrl.replace(/([?&])(sslmode|ssl|sslnegotiation)=[^&#]*/gi, ''),
         ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 4000,
+        connectionTimeoutMillis: 5000,
       });
       const t0 = Date.now();
       const testRes = await testPool.query('SELECT 1 as test');
@@ -316,15 +330,41 @@ app.get('/api/health/db-check', async (_req: Request, res: Response) => {
     }
   }
 
-  if (supabaseUrl && supabaseKey) {
+  if (unpooledUrl) {
+    try {
+      const { Pool } = await import('pg');
+      const unpooledPool = new Pool({
+        connectionString: unpooledUrl.replace(/([?&])(sslmode|ssl|sslnegotiation)=[^&#]*/gi, ''),
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 5000,
+      });
+      const t0 = Date.now();
+      const testRes = await unpooledPool.query('SELECT 1 as test');
+      const latencyMs = Date.now() - t0;
+      await unpooledPool.end();
+      diagnostics.postgresUnpooledProbe = {
+        success: true,
+        latencyMs,
+        result: testRes.rows[0],
+      };
+    } catch (probeErr: any) {
+      diagnostics.postgresUnpooledProbe = {
+        success: false,
+        code: probeErr.code,
+        message: probeErr.message,
+      };
+    }
+  }
+
+  if (supabaseUrl && activeSupabaseKey) {
     try {
       const restEndpoint = `${supabaseUrl.replace(/\/+$/, '')}/rest/v1/ledger_state?select=version&limit=1`;
       const t0 = Date.now();
       const res = await fetch(restEndpoint, {
         method: 'GET',
         headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
+          apikey: activeSupabaseKey,
+          Authorization: `Bearer ${activeSupabaseKey}`,
         },
       });
       const latencyMs = Date.now() - t0;
